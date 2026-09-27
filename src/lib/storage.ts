@@ -104,13 +104,13 @@ export function saveDraft(
   attemptId: string,
   problemId: string,
   scene: unknown,
-  notes: string,
-  codeText: string
+  codeText: string,
+  chatTurns: { question: string; answer: string }[]
 ): void {
   try {
     localStorage.setItem(
       DRAFT_PREFIX + attemptId,
-      JSON.stringify({ attemptId, problemId, scene, notes, codeText, savedAt: Date.now() })
+      JSON.stringify({ attemptId, problemId, scene, codeText, chatTurns, savedAt: Date.now() })
     );
   } catch {
     // Storage full or unavailable, drafts are best-effort.
@@ -119,7 +119,12 @@ export function saveDraft(
 
 export function getDraft<T = unknown>(
   attemptId: string
-): { scene?: T; notes?: string; codeText?: string; savedAt: number } | undefined {
+): {
+  scene?: T;
+  codeText?: string;
+  chatTurns?: { question: string; answer: string }[];
+  savedAt: number;
+} | undefined {
   try {
     const raw = localStorage.getItem(DRAFT_PREFIX + attemptId);
     return raw ? JSON.parse(raw) : undefined;

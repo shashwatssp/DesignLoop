@@ -58,7 +58,7 @@ function buildGeminiBody(input) {
       responseMimeType: "application/json",
       responseSchema: TEXT_ANSWER_SCHEMA,
       temperature: 0.6,
-      maxOutputTokens: 700,
+      maxOutputTokens: 1200,
     },
   };
 }

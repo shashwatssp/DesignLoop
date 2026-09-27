@@ -81,7 +81,7 @@ const FEEDBACK_SCHEMA = {
 
 const TEXT_ANSWER_SCHEMA = {
   type: "OBJECT",
-  properties: { answer: { type: "STRING" } },
+  properties: { answer: { type: "STRING" }, readyToEvaluate: { type: "BOOLEAN" } },
   required: ["answer"],
 } as const;
 
@@ -116,10 +116,16 @@ export interface ChatRequest {
   question: string;
 }
 
-/** Mid-attempt: cheap text-only interviewer hints. */
-export async function requestInterviewerHints(input: InterviewerRequest): Promise<string> {
-  const res = await callGemini<{ answer: string }>("/api/interviewer", input, buildInterviewerBody(input));
-  return res.answer;
+/** Mid-attempt: one conversational turn with the interviewer (cheap, text-only). */
+export async function requestInterviewerTurn(
+  input: InterviewerRequest
+): Promise<{ answer: string; readyToEvaluate: boolean }> {
+  const res = await callGemini<{ answer: string; readyToEvaluate?: boolean }>(
+    "/api/interviewer",
+    input,
+    buildInterviewerBody(input)
+  );
+  return { answer: res.answer, readyToEvaluate: !!res.readyToEvaluate };
 }
 
 /** Final submission: full multimodal scored evaluation. */
@@ -158,11 +164,13 @@ const MODEL_CHAIN = [GEMINI_MODEL, "gemini-3.7-flash", "gemini-3.5-flash"];
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function isRetryable(status: number | undefined, message: string): boolean {
-  return (
-    (!!status && [429, 500, 502, 503, 504].includes(status)) ||
-    /overload|unavailable|high demand|internal error/i.test(message)
-  );
+const NON_RETRYABLE_STATUSES = [400, 401, 403, 404];
+
+function isRetryable(status: number | undefined): boolean {
+  if (status && NON_RETRYABLE_STATUSES.includes(status)) return false;
+  // Everything else retries: 5xx, 429, network hiccups, and malformed/truncated
+  // JSON (no HTTP status, e.g. "Unterminated string in JSON").
+  return true;
 }
 
 /**
@@ -178,8 +186,7 @@ async function callGeminiDirectResilient<T>(body: unknown, apiKey: string): Prom
       } catch (err) {
         lastError = err;
         const status = (err as { status?: number })?.status;
-        const message = err instanceof Error ? err.message : String(err);
-        if (!isRetryable(status, message)) throw err;
+        if (!isRetryable(status)) throw err;
         await sleep(1200 * (attempt + 1));
       }
     }
@@ -219,6 +226,18 @@ async function callGeminiDirect<T>(body: unknown, apiKey: string, model: string)
     .map((p: { text?: string }) => p.text ?? "")
     .join("");
   if (!text) throw new Error("Gemini returned an empty response");
+  return parseGeminiJson<T>(text);
+}
+
+/** Tolerant JSON extraction: strips code fences and wraps, then parses. */
+function parseGeminiJson<T>(raw: string): T {
+  let text = raw.trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start > 0 || (end !== -1 && end < text.length - 1)) {
+    if (start !== -1 && end > start) text = text.slice(start, end + 1);
+  }
   return JSON.parse(text) as T;
 }
 
@@ -287,22 +306,23 @@ function buildFeedbackBody(req: FeedbackRequest) {
       responseMimeType: "application/json",
       responseSchema: FEEDBACK_SCHEMA,
       temperature: 0.4,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 4096,
     },
   };
 }
 
-const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. The candidate shares their progress so far (diagram outline, notes, code) and often asks you a question or requests hints.
+const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. You and the candidate are chatting in real time while they build their design on a shared canvas.
 
-Respond as an interviewer would mid-interview:
-- Briefly acknowledge what they have done well so far (1-2 sentences, reference their actual components).
-- Answer their question if they asked one.
-- Give AT MOST 2 gentle hints: nudges toward gaps or risks, never the full answer.
-- Ask 1-2 probing questions a real interviewer would ask next.
-- Do NOT score. Do NOT give the complete solution. Keep the whole response under 150 words.
+How to behave:
+- Sound like a friendly, sharp interviewer. Keep every reply under 120 words.
+- Reference their actual canvas contents and the conversation so far. Never invent components that are not there.
+- When they share progress: acknowledge specifics first, then give AT MOST 2 gentle hints (nudges toward gaps or risks, never the full answer) and/or ask 1-2 probing questions a real interviewer would ask next.
+- When they ask a question: answer it the way a helpful interviewer would in a real interview: short, honest, without giving away the solution.
+- Set readyToEvaluate to true ONLY when their design clearly covers the requirements and further chatting would add little. Never set it true before they have shared a meaningful design.
+- Do NOT score. Do NOT give the complete solution.
 
 ${NO_EM_DASH_RULE}
-Respond ONLY with JSON matching the schema {"answer": string}.`;
+Respond ONLY with JSON matching the schema {"answer": string, "readyToEvaluate": boolean}.`;
 
 function buildInterviewerBody(req: InterviewerRequest) {
   const text = [
@@ -329,7 +349,7 @@ function buildInterviewerBody(req: InterviewerRequest) {
       responseMimeType: "application/json",
       responseSchema: TEXT_ANSWER_SCHEMA,
       temperature: 0.6,
-      maxOutputTokens: 600,
+      maxOutputTokens: 900,
     },
   };
 }
@@ -367,7 +387,7 @@ function buildChatBody(req: ChatRequest) {
       responseMimeType: "application/json",
       responseSchema: TEXT_ANSWER_SCHEMA,
       temperature: 0.6,
-      maxOutputTokens: 700,
+      maxOutputTokens: 1200,
     },
   };
 }

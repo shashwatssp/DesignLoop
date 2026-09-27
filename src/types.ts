@@ -56,6 +56,8 @@ export interface Attempt {
   notes: string;
   /** Content written in Code mode (class code / SQL / pseudocode). */
   codeText: string;
+  /** Mid-attempt conversation with the interviewer (candidate message + interviewer reply). */
+  chatTurns?: { question: string; answer: string }[];
   feedback?: Feedback;
   followUps?: FollowUp[];
 }

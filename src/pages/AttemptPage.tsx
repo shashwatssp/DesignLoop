@@ -7,7 +7,6 @@ import type {
   ExcalidrawInitialDataState,
 } from "@excalidraw/excalidraw/types";
 import { ErrorBox, Spinner } from "../components/Loading";
-import MicButton from "../components/MicButton";
 import Timer from "../components/Timer";
 import { getProblemById } from "../data/problems";
 import { useTheme } from "../hooks/useTheme";
@@ -15,7 +14,7 @@ import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import {
   extractDiagramOutline,
   requestFeedback,
-  requestInterviewerHints,
+  requestInterviewerTurn,
 } from "../lib/gemini";
 import {
   clearDraft,
@@ -28,14 +27,10 @@ import {
 import type { Attempt, Feedback, Problem } from "../types";
 
 type Mode = "diagram" | "code";
-type PanelTab = "interviewer" | "response";
-type InterviewerTurn = { question: string; answer: string };
+type ChatTurn = { question: string; answer: string; readyToEvaluate?: boolean };
 
-const CHAT_SUGGESTIONS = [
-  "What am I missing so far?",
-  "Is my approach on the right track?",
-  "What would you probe next?",
-];
+const GREETING =
+  "Hi, I am your DesignLoop interviewer. Build your design on the canvas (switch to Code mode for schemas and classes), then walk me through it. Speak with the mic or type: I reply right here with hints and probing questions. When we both feel it is complete, end the interview and I will score the full attempt.";
 
 export default function AttemptPage() {
   const { attemptId } = useParams();
@@ -46,15 +41,12 @@ export default function AttemptPage() {
   const [problem, setProblem] = useState<Problem | null>(null);
   const [loading, setLoading] = useState(true);
   const [initialScene, setInitialScene] = useState<ExcalidrawInitialDataState | undefined>();
-  const [notes, setNotes] = useState("");
   const [codeText, setCodeText] = useState("");
   const [mode, setMode] = useState<Mode>("diagram");
-  const [panelTab, setPanelTab] = useState<PanelTab>("response");
   const [briefOpen, setBriefOpen] = useState(true);
-  const [interviewerTurns, setInterviewerTurns] = useState<InterviewerTurn[]>([]);
-  const [interviewerQuestion, setInterviewerQuestion] = useState("");
-  const [askingInterviewer, setAskingInterviewer] = useState(false);
-  const [unreadInterviewer, setUnreadInterviewer] = useState(false);
+  const [chatTurns, setChatTurns] = useState<ChatTurn[]>([]);
+  const [draftMessage, setDraftMessage] = useState("");
+  const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
@@ -66,7 +58,15 @@ export default function AttemptPage() {
   speechRef.current = speech;
   const threadEndRef = useRef<HTMLDivElement | null>(null);
 
-  // ---- load attempt + draft recovery ----
+  // Refs mirroring latest state for savers that must not go stale.
+  const attemptRef = useRef<Attempt | null>(null);
+  attemptRef.current = attempt;
+  const codeRef = useRef("");
+  codeRef.current = codeText;
+  const turnsRef = useRef<ChatTurn[]>([]);
+  turnsRef.current = chatTurns;
+
+  // ---- load attempt + draft recovery (canvas, code, chat) ----
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -81,10 +81,12 @@ export default function AttemptPage() {
       if (cancelled) return;
       setAttempt(a);
       setProblem(p ?? null);
-      if (draft?.notes) setNotes(draft.notes);
       if (draft?.codeText) setCodeText(draft.codeText);
-      if (draft?.scene)
-        setInitialScene({ elements: draft.scene as ExcalidrawInitialDataState["elements"] });
+      else if (a.codeText) setCodeText(a.codeText);
+      if (draft?.chatTurns?.length) setChatTurns(draft.chatTurns);
+      else if (a.chatTurns?.length) setChatTurns(a.chatTurns);
+      const scene = draft?.scene ?? (a.sceneJson ? safeParseScene(a.sceneJson) : undefined);
+      if (scene) setInitialScene({ elements: scene as ExcalidrawInitialDataState["elements"] });
       setLoading(false);
     })();
     return () => {
@@ -92,18 +94,67 @@ export default function AttemptPage() {
     };
   }, [attemptId]);
 
-  // ---- mic dictation flows into the response box ----
+  function safeParseScene(sceneJson: string): unknown {
+    try {
+      const parsed = JSON.parse(sceneJson);
+      return Array.isArray(parsed) ? parsed : parsed?.elements;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ---- persistence: draft save (canvas + code + chat), debounced or immediate ----
+  const draftTimerRef = useRef<number | null>(null);
+  const scheduleDraftSave = useCallback((immediate = false) => {
+    const run = () => {
+      const a = attemptRef.current;
+      if (!a) return;
+      saveDraft(
+        a.id,
+        a.problemId,
+        excalidrawRef.current?.getSceneElements() ?? [],
+        codeRef.current,
+        turnsRef.current
+      );
+    };
+    if (draftTimerRef.current) window.clearTimeout(draftTimerRef.current);
+    if (immediate) run();
+    else draftTimerRef.current = window.setTimeout(run, 800);
+  }, []);
+
+  const handleCanvasChange = useCallback(() => scheduleDraftSave(), []);
+
+  // Save immediately when leaving the page or hiding the tab.
+  useEffect(() => {
+    const onLeave = () => scheduleDraftSave(true);
+    window.addEventListener("beforeunload", onLeave);
+    document.addEventListener("visibilitychange", onLeave);
+    return () => {
+      window.removeEventListener("beforeunload", onLeave);
+      document.removeEventListener("visibilitychange", onLeave);
+    };
+  }, [scheduleDraftSave]);
+
+  // Keep drafts fresh when code text changes.
+  useEffect(() => {
+    if (!attempt || submitting) return;
+    scheduleDraftSave();
+  }, [codeText, attempt, submitting, scheduleDraftSave]);
+
+  // ---- mic dictation flows into the chat input ----
   useEffect(() => {
     if (speech.finalText) {
-      setNotes((prev) => (prev.trimEnd() ? `${prev.trimEnd()} ${speech.finalText}` : speech.finalText));
+      setDraftMessage((prev) =>
+        prev.trimEnd() ? `${prev.trimEnd()} ${speech.finalText}` : speech.finalText
+      );
       speechRef.current.reset();
     }
   }, [speech.finalText]);
 
-  // ---- auto-scroll the interviewer thread ----
+  // ---- auto-scroll the chat ----
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [interviewerTurns, askingInterviewer]);
+  }, [chatTurns, sending]);
 
   // ---- toast auto-dismiss ----
   useEffect(() => {
@@ -111,21 +162,6 @@ export default function AttemptPage() {
     const t = setTimeout(() => setToast(null), 3500);
     return () => clearTimeout(t);
   }, [toast]);
-
-  // ---- debounced draft save ----
-  useEffect(() => {
-    if (!attempt || submitting) return;
-    const t = setTimeout(() => {
-      saveDraft(
-        attempt.id,
-        attempt.problemId,
-        excalidrawRef.current?.getSceneElements() ?? [],
-        notes,
-        codeText
-      );
-    }, 1500);
-    return () => clearTimeout(t);
-  }, [attempt, notes, codeText, submitting]);
 
   const endsAt = useMemo(
     () => (attempt && problem ? attempt.startedAt + problem.timeLimitMin * 60_000 : 0),
@@ -166,6 +202,17 @@ export default function AttemptPage() {
     });
   }, [buildPngBlob]);
 
+  /** Everything the candidate said in the conversation, as the graded response. */
+  const responseTranscript = useMemo(
+    () =>
+      chatTurns
+        .map((t) => t.question.trim())
+        .filter(Boolean)
+        .map((q) => `Me: ${q}`)
+        .join("\n\n"),
+    [chatTurns]
+  );
+
   /** Full review prompt for pasting into ChatGPT / Claude. */
   const buildReviewPrompt = useCallback((): string => {
     if (!problem) return "";
@@ -178,9 +225,9 @@ export default function AttemptPage() {
       `## Requirements`,
       ...problem.requirements.map((r) => `- ${r}`),
     ];
-    if (notes.trim()) lines.push(``, `## My explanation (typed + spoken)`, notes.trim());
-    if (codeText.trim())
-      lines.push(``, `## My code`, "```", codeText.trim(), "```");
+    if (responseTranscript)
+      lines.push(``, `## My interview conversation (what I said while designing)`, responseTranscript);
+    if (codeText.trim()) lines.push(``, `## My code`, "```", codeText.trim(), "```");
     lines.push(
       ``,
       `My diagram is attached as an image (exported from my canvas). If you cannot see the image, ask me for it.`,
@@ -188,7 +235,7 @@ export default function AttemptPage() {
       `Evaluate like a real interviewer: give an overall score out of 10, what I did well, what is missing or wrong, how well I communicated, and a prioritized list of improvements. Do not use em dashes.`
     );
     return lines.join("\n");
-  }, [problem, notes, codeText]);
+  }, [problem, responseTranscript, codeText]);
 
   const handleExport = useCallback(
     async (kind: "prompt" | "png" | "md") => {
@@ -232,7 +279,7 @@ export default function AttemptPage() {
     [buildReviewPrompt, buildPngBlob, problem]
   );
 
-  // ---------- final submission ----------
+  // ---------- ending the interview: one multimodal Gemini call ----------
 
   const handleSubmit = useCallback(async () => {
     if (!attempt || !problem || submitting) return;
@@ -240,6 +287,7 @@ export default function AttemptPage() {
     setError(null);
     try {
       speechRef.current.stop();
+      scheduleDraftSave(true);
       const api = excalidrawRef.current;
       const elements = api?.getSceneElements() ?? [];
       const sceneJson =
@@ -251,8 +299,9 @@ export default function AttemptPage() {
         ...attempt,
         sceneJson,
         pngBase64,
-        notes,
+        notes: responseTranscript,
         codeText,
+        chatTurns: chatTurns.map(({ question, answer }) => ({ question, answer })),
         endedAt: Date.now(),
         durationMs: Date.now() - attempt.startedAt,
       };
@@ -266,7 +315,7 @@ export default function AttemptPage() {
             sceneJson,
             pngBase64,
             diagramOutline: extractDiagramOutline(sceneJson),
-            notes,
+            notes: responseTranscript,
             codeText,
             durationMs: submitted.durationMs,
           },
@@ -287,48 +336,61 @@ export default function AttemptPage() {
       setError(err instanceof Error ? err.message : "Failed to submit for feedback");
       setSubmitting(false);
     }
-  }, [attempt, problem, notes, codeText, submitting, navigate, buildPngBase64]);
-
-  const handleExpire = useCallback(() => {
-    if (getPrefs().autoSubmit) handleSubmit();
-  }, [handleSubmit]);
+  }, [attempt, problem, codeText, chatTurns, responseTranscript, submitting, navigate, buildPngBase64, scheduleDraftSave]);
 
   // ---------- interviewer chat ----------
 
-  const handleAskInterviewer = useCallback(
-    async (override?: string) => {
-      if (!problem || askingInterviewer || submitting) return;
-      const question = (override ?? interviewerQuestion).trim() ||
-        "Review my progress so far and give me hints.";
-      setAskingInterviewer(true);
-      setError(null);
-      try {
-        const api = excalidrawRef.current;
-        const sceneJson = JSON.stringify({ elements: api?.getSceneElements() ?? [] });
-        const answer = await requestInterviewerHints({
-          problem,
-          diagramOutline: extractDiagramOutline(sceneJson),
-          notes,
-          codeText,
-          question,
-          history: interviewerTurns,
-        });
-        setInterviewerTurns((t) => [...t, { question, answer }]);
-        setInterviewerQuestion("");
-        if (panelTab !== "interviewer") setUnreadInterviewer(true);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Interviewer is unavailable, try again");
-      } finally {
-        setAskingInterviewer(false);
-      }
-    },
-    [problem, notes, codeText, interviewerQuestion, interviewerTurns, askingInterviewer, submitting, panelTab]
-  );
+  const handleSend = useCallback(async () => {
+    if (!problem || sending || submitting) return;
+    const message = draftMessage.trim();
+    if (!message) return;
+    setDraftMessage("");
+    setSending(true);
+    setError(null);
 
-  const switchTab = (tab: PanelTab) => {
-    setPanelTab(tab);
-    if (tab === "interviewer") setUnreadInterviewer(false);
-  };
+    const history: { question: string; answer: string }[] = chatTurns.map(({ question, answer }) => ({
+      question,
+      answer,
+    }));
+
+    // Show the candidate's message immediately.
+    setChatTurns((t) => [...t, { question: message, answer: "" }]);
+    try {
+      const api = excalidrawRef.current;
+      const sceneJson = JSON.stringify({ elements: api?.getSceneElements() ?? [] });
+      const { answer, readyToEvaluate } = await requestInterviewerTurn({
+        problem,
+        diagramOutline: extractDiagramOutline(sceneJson),
+        notes: history.map((h) => `Me: ${h.question}`).join("\n"),
+        codeText,
+        question: message,
+        history,
+      });
+      setChatTurns((t) => {
+        const next = [...t];
+        next[next.length - 1] = { question: message, answer, readyToEvaluate };
+        return next;
+      });
+      // Persist the conversation to IndexedDB immediately (crash/refresh safe).
+      const a = attemptRef.current;
+      if (a) {
+        const updated: Attempt = {
+          ...a,
+          chatTurns: [...turnsRef.current].map(({ question, answer }) => ({ question, answer })),
+        };
+        setAttempt(updated);
+        await saveAttempt(updated, problem.title);
+      }
+      scheduleDraftSave(true);
+    } catch (err) {
+      // Remove the optimistic bubble and restore the input.
+      setChatTurns((t) => t.slice(0, -1));
+      setDraftMessage(message);
+      setError(err instanceof Error ? err.message : "Interviewer is unavailable, try again");
+    } finally {
+      setSending(false);
+    }
+  }, [problem, draftMessage, chatTurns, codeText, submitting, scheduleDraftSave]);
 
   // ---- loading / not found ----
   if (loading) return <Spinner label="Loading attempt…" />;
@@ -343,12 +405,15 @@ export default function AttemptPage() {
     );
   }
 
+  const lastTurn = chatTurns[chatTurns.length - 1];
+  const readyToEvaluate = !!lastTurn?.readyToEvaluate;
+
   return (
     <div
       className="fixed inset-x-0 bottom-0 top-14 flex flex-col lg:flex-row"
       style={{ height: "calc(100dvh - 3.5rem)" }}
     >
-      {/* ---------- Left: canvas / code ---------- */}
+      {/* ---------- Left: canvas / code (Excalidraw stays mounted, so nothing is ever lost) ---------- */}
       <section className="flex h-[42vh] shrink-0 flex-col border-b border-slate-200 dark:border-slate-800 lg:h-auto lg:min-h-0 lg:flex-1 lg:border-b-0">
         <div className="flex shrink-0 items-center gap-1 bg-white px-3 py-1.5 dark:bg-slate-900">
           {(
@@ -369,7 +434,10 @@ export default function AttemptPage() {
               {label}
             </button>
           ))}
-          <div className="relative ml-auto">
+          <span className="ml-auto pr-2 text-xs text-slate-400 dark:text-slate-500">
+            {problem.type.toUpperCase()} · saved automatically
+          </span>
+          <div className="relative">
             <button
               onClick={() => setExportOpen((o) => !o)}
               className="btn-secondary px-3 py-1 text-xs"
@@ -412,38 +480,48 @@ export default function AttemptPage() {
         </div>
 
         <div className="min-h-0 flex-1">
-          {mode === "diagram" ? (
-            <div className="h-full w-full">
-              <Excalidraw
-                excalidrawAPI={(api) => {
-                  excalidrawRef.current = api;
-                }}
-                initialData={initialScene}
-                theme={theme}
-                gridModeEnabled={false}
-              />
-            </div>
-          ) : (
-            <textarea
-              value={codeText}
-              onChange={(e) => setCodeText(e.target.value)}
-              spellCheck={false}
-              placeholder={
-                "// Write your class design / SQL schema / pseudocode here.\n// e.g.\n// interface ParkingSpot { assign(v: Vehicle): Ticket; }\n// class FeeCalculator { calculate(ticket: Ticket): number {} }"
-              }
-              className="h-full w-full resize-none bg-white p-4 font-mono text-sm leading-relaxed text-slate-800 outline-none dark:bg-slate-950 dark:text-slate-200"
+          <div className={mode === "diagram" ? "h-full w-full" : "hidden"}>
+            <Excalidraw
+              excalidrawAPI={(api) => {
+                excalidrawRef.current = api;
+              }}
+              initialData={initialScene}
+              onChange={handleCanvasChange}
+              theme={theme}
+              gridModeEnabled={false}
             />
-          )}
+          </div>
+          <textarea
+            value={codeText}
+            onChange={(e) => setCodeText(e.target.value)}
+            spellCheck={false}
+            placeholder={
+              "// Write your class design / SQL schema / pseudocode here.\n// e.g.\n// interface ParkingSpot { assign(v: Vehicle): Ticket; }\n// class FeeCalculator { calculate(ticket: Ticket): number {} }"
+            }
+            className={`h-full w-full resize-none bg-white p-4 font-mono text-sm leading-relaxed text-slate-800 outline-none dark:bg-slate-950 dark:text-slate-200 ${
+              mode === "code" ? "" : "hidden"
+            }`}
+          />
         </div>
       </section>
 
-      {/* ---------- Right: focused interactive panel ---------- */}
+      {/* ---------- Right: THE interview (one continuous conversation) ---------- */}
       <aside className="flex min-h-0 min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-900 lg:w-[400px] lg:flex-none lg:border-l lg:border-slate-200 lg:dark:border-slate-800">
-        {/* header: title, timer, brief */}
+        {/* header */}
         <div className="shrink-0 border-b border-slate-200 p-3 dark:border-slate-800">
           <div className="flex items-center justify-between gap-2">
             <h2 className="truncate text-sm font-semibold">{problem.title}</h2>
-            <Timer endsAt={endsAt} running={!submitting} onExpire={handleExpire} />
+            <div className="flex shrink-0 items-center gap-2">
+              <Timer endsAt={endsAt} running={!submitting} onExpire={() => handleSubmit()} />
+              <button
+                onClick={handleSubmit}
+                disabled={submitting || sending || chatTurns.length === 0}
+                title="End the interview and get your full evaluation"
+                className="text-xs font-medium text-amber-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-amber-400"
+              >
+                ⏱ End &amp; evaluate
+              </button>
+            </div>
           </div>
           <button
             onClick={() => setBriefOpen((o) => !o)}
@@ -467,121 +545,81 @@ export default function AttemptPage() {
           )}
         </div>
 
-        {/* tabs */}
-        <div className="flex shrink-0 gap-1 border-b border-slate-200 px-3 pt-2 dark:border-slate-800">
-          {(
-            [
-              ["interviewer", "💬 Interviewer"],
-              ["response", "📝 Response"],
-            ] as [PanelTab, string][]
-          ).map(([tab, label]) => (
-            <button
-              key={tab}
-              onClick={() => switchTab(tab)}
-              className={`relative rounded-t-lg px-4 py-2 text-sm font-medium transition-colors ${
-                panelTab === tab
-                  ? "border-b-2 border-indigo-500 text-indigo-600 dark:text-indigo-300"
-                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-              }`}
-            >
-              {label}
-              {tab === "interviewer" && unreadInterviewer && (
-                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
+        {/* conversation thread */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+          <div className="w-fit max-w-[95%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
+            🧑‍💼 {GREETING}
+          </div>
+
+          {chatTurns.map((turn, i) => (
+            <div key={i} className="space-y-2">
+              <div className="ml-auto w-fit max-w-[90%] whitespace-pre-wrap rounded-xl rounded-br-sm bg-indigo-600 px-3 py-2 text-xs text-white">
+                {turn.question}
+              </div>
+              {turn.answer && (
+                <div className="w-fit max-w-[95%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
+                  🧑‍💼 {turn.answer}
+                </div>
               )}
-            </button>
+              {i === chatTurns.length - 1 && readyToEvaluate && !sending && (
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting}
+                  className="btn-primary w-full text-xs"
+                >
+                  🏁 Your interviewer says this design is ready. End the interview &amp; get evaluated
+                </button>
+              )}
+            </div>
           ))}
+
+          {sending && <Spinner label="Interviewer is thinking…" />}
+          {error && <ErrorBox message={error} />}
+          <div ref={threadEndRef} />
         </div>
 
-        {/* Interviewer tab: chat thread */}
-        {panelTab === "interviewer" && (
-          <>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-              {interviewerTurns.map((turn, i) => (
-                <div key={i} className="space-y-2">
-                  <div className="ml-auto w-fit max-w-[90%] rounded-xl rounded-br-sm bg-indigo-600 px-3 py-2 text-xs text-white">
-                    {turn.question}
-                  </div>
-                  <div className="w-fit max-w-[95%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
-                    {turn.answer}
-                  </div>
-                </div>
-              ))}
-              {interviewerTurns.length === 0 && (
-                <div className="flex h-full flex-col items-center justify-center gap-3 px-2 text-center">
-                  <p className="text-xs text-slate-400 dark:text-slate-500">
-                    Your interviewer is watching the canvas. Ask anything, or tap a shortcut:
-                  </p>
-                  <div className="flex flex-col items-stretch gap-2">
-                    {CHAT_SUGGESTIONS.map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => handleAskInterviewer(s)}
-                        disabled={askingInterviewer}
-                        className="rounded-full border border-slate-300 px-4 py-1.5 text-xs text-slate-600 transition-colors hover:border-indigo-400 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {askingInterviewer && <Spinner label="Interviewer is reviewing your canvas…" />}
-              <div ref={threadEndRef} />
+        {/* pinned chat input (mic + text + send) */}
+        <div className="shrink-0 space-y-2 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
+          {speech.listening && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 text-xs italic text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+              {speech.interim ? `“${speech.interim}”` : "Listening… speak your design reasoning."}
             </div>
-
-            {/* chat input (pinned) */}
-            <div className="shrink-0 space-y-2 border-t border-slate-200 p-3 dark:border-slate-800">
-              {error && <ErrorBox message={error} />}
-              <div className="flex gap-2">
-                <input
-                  value={interviewerQuestion}
-                  onChange={(e) => setInterviewerQuestion(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleAskInterviewer()}
-                  placeholder="Ask the interviewer…"
-                  className="input flex-1"
-                />
-                <button
-                  onClick={() => handleAskInterviewer()}
-                  disabled={askingInterviewer || submitting}
-                  className="btn-primary shrink-0"
-                >
-                  Ask
-                </button>
-              </div>
-            </div>
-          </>
-        )}
-
-        {/* Response tab: capture studio */}
-        {panelTab === "response" && (
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-            {error && <ErrorBox message={error} />}
-            <MicButton
-              supported={speech.supported}
-              listening={speech.listening}
-              interim={speech.interim}
-              onStart={speech.start}
-              onStop={speech.stop}
+          )}
+          {speech.error && <p className="text-xs text-red-500">{speech.error}</p>}
+          <div className="flex items-center gap-2">
+            {speech.supported && (
+              <button
+                onClick={speech.listening ? speech.stop : speech.start}
+                title={speech.listening ? "Stop dictation" : "Dictate with your voice"}
+                className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-lg transition-colors ${
+                  speech.listening
+                    ? "bg-red-600 text-white hover:bg-red-500"
+                    : "bg-slate-200 text-slate-600 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                }`}
+              >
+                {speech.listening ? "⏹" : "🎤"}
+              </button>
+            )}
+            <input
+              value={draftMessage}
+              onChange={(e) => setDraftMessage(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+              placeholder={
+                sending
+                  ? "Interviewer is replying…"
+                  : "Walk me through your design, or ask me anything…"
+              }
+              className="input flex-1"
+              disabled={sending || submitting}
             />
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Explain your design, assumptions and trade-offs. Whatever you speak is written here."
-              className="input min-h-[220px] resize-none"
-            />
-            <p className="text-[10px] text-slate-400 dark:text-slate-500">
-              {speech.supported
-                ? "Tap the mic and speak. Everything in this box is sent to the interviewer when you submit."
-                : "This box is sent to the interviewer when you submit."}
-            </p>
+            <button
+              onClick={handleSend}
+              disabled={sending || submitting || !draftMessage.trim()}
+              className="btn-primary shrink-0"
+            >
+              Send
+            </button>
           </div>
-        )}
-
-        {/* pinned submit bar (visible from both tabs) */}
-        <div className="shrink-0 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-          <button onClick={handleSubmit} disabled={submitting} className="btn-primary w-full">
-            🏁 Submit final design
-          </button>
         </div>
       </aside>
 
@@ -598,9 +636,9 @@ export default function AttemptPage() {
           <div className="card flex flex-col items-center gap-4 p-8">
             <div className="h-10 w-10 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
             <div className="text-center">
-              <p className="font-semibold">Interviewer is evaluating your design…</p>
+              <p className="font-semibold">Interviewer is evaluating your full attempt…</p>
               <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Analyzing your diagram, notes, and code. This usually takes a few seconds.
+                Your diagram, code, and the entire conversation are being reviewed.
               </p>
             </div>
           </div>
