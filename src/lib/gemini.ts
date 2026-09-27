@@ -143,14 +143,48 @@ export async function requestFollowUp(input: ChatRequest): Promise<string> {
  */
 async function callGemini<T>(apiPath: string, proxyBody: unknown, directBody: unknown): Promise<T> {
   if (DIRECT_KEY) {
-    return callGeminiDirect<T>(directBody, DIRECT_KEY);
+    return callGeminiDirectResilient<T>(directBody, DIRECT_KEY);
   }
   try {
     return await postJson<T>(apiPath, proxyBody);
   } catch (err) {
-    if (DIRECT_KEY) return callGeminiDirect<T>(directBody, DIRECT_KEY);
+    if (DIRECT_KEY) return callGeminiDirectResilient<T>(directBody, DIRECT_KEY);
     throw err;
   }
+}
+
+/** Models tried in order when the primary is overloaded. */
+const MODEL_CHAIN = [GEMINI_MODEL, "gemini-3.7-flash", "gemini-3.5-flash"];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isRetryable(status: number | undefined, message: string): boolean {
+  return (
+    (!!status && [429, 500, 502, 503, 504].includes(status)) ||
+    /overload|unavailable|high demand|internal error/i.test(message)
+  );
+}
+
+/**
+ * Direct call that survives high-demand periods: retries the primary model
+ * with backoff, then falls through the MODEL_CHAIN before giving up.
+ */
+async function callGeminiDirectResilient<T>(body: unknown, apiKey: string): Promise<T> {
+  let lastError: unknown;
+  for (const model of MODEL_CHAIN) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await callGeminiDirect<T>(body, apiKey, model);
+      } catch (err) {
+        lastError = err;
+        const status = (err as { status?: number })?.status;
+        const message = err instanceof Error ? err.message : String(err);
+        if (!isRetryable(status, message)) throw err;
+        await sleep(1200 * (attempt + 1));
+      }
+    }
+  }
+  throw lastError;
 }
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -166,15 +200,19 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function callGeminiDirect<T>(body: unknown, apiKey: string): Promise<T> {
-  const res = await fetch(`${API_BASE}/${GEMINI_MODEL}:generateContent`, {
+async function callGeminiDirect<T>(body: unknown, apiKey: string, model: string): Promise<T> {
+  const res = await fetch(`${API_BASE}/${model}:generateContent`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`Gemini API error (${res.status}): ${text.slice(0, 300)}`);
+    const err = new Error(`Gemini API error (${res.status}): ${text.slice(0, 300)}`) as Error & {
+      status?: number;
+    };
+    err.status = res.status;
+    throw err;
   }
   const data = await res.json();
   const text: string = (data?.candidates?.[0]?.content?.parts ?? [])

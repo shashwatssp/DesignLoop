@@ -28,7 +28,14 @@ import {
 import type { Attempt, Feedback, Problem } from "../types";
 
 type Mode = "diagram" | "code";
+type PanelTab = "interviewer" | "response";
 type InterviewerTurn = { question: string; answer: string };
+
+const CHAT_SUGGESTIONS = [
+  "What am I missing so far?",
+  "Is my approach on the right track?",
+  "What would you probe next?",
+];
 
 export default function AttemptPage() {
   const { attemptId } = useParams();
@@ -42,17 +49,22 @@ export default function AttemptPage() {
   const [notes, setNotes] = useState("");
   const [codeText, setCodeText] = useState("");
   const [mode, setMode] = useState<Mode>("diagram");
+  const [panelTab, setPanelTab] = useState<PanelTab>("response");
   const [briefOpen, setBriefOpen] = useState(true);
   const [interviewerTurns, setInterviewerTurns] = useState<InterviewerTurn[]>([]);
   const [interviewerQuestion, setInterviewerQuestion] = useState("");
   const [askingInterviewer, setAskingInterviewer] = useState(false);
+  const [unreadInterviewer, setUnreadInterviewer] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
 
   const excalidrawRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const speech = useSpeechRecognition(getPrefs().transcriptLang);
   const speechRef = useRef(speech);
   speechRef.current = speech;
+  const threadEndRef = useRef<HTMLDivElement | null>(null);
 
   // ---- load attempt + draft recovery ----
   useEffect(() => {
@@ -88,6 +100,18 @@ export default function AttemptPage() {
     }
   }, [speech.finalText]);
 
+  // ---- auto-scroll the interviewer thread ----
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [interviewerTurns, askingInterviewer]);
+
+  // ---- toast auto-dismiss ----
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
   // ---- debounced draft save ----
   useEffect(() => {
     if (!attempt || submitting) return;
@@ -108,12 +132,14 @@ export default function AttemptPage() {
     [attempt, problem]
   );
 
-  const buildPngBase64 = useCallback(async (): Promise<string | undefined> => {
+  // ---------- diagram export helpers ----------
+
+  const buildPngBlob = useCallback(async (): Promise<Blob | undefined> => {
     const api = excalidrawRef.current;
     if (!api) return undefined;
     const elements = api.getSceneElements();
     if (!elements || elements.length === 0) return undefined;
-    const blob = await exportToBlob({
+    return exportToBlob({
       elements,
       appState: {
         ...api.getAppState(),
@@ -124,6 +150,11 @@ export default function AttemptPage() {
       mimeType: "image/png",
       exportPadding: 24,
     });
+  }, []);
+
+  const buildPngBase64 = useCallback(async (): Promise<string | undefined> => {
+    const blob = await buildPngBlob();
+    if (!blob) return undefined;
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => {
@@ -133,9 +164,76 @@ export default function AttemptPage() {
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
-  }, []);
+  }, [buildPngBlob]);
 
-  // ---- final submission: one multimodal Gemini call ----
+  /** Full review prompt for pasting into ChatGPT / Claude. */
+  const buildReviewPrompt = useCallback((): string => {
+    if (!problem) return "";
+    const lines = [
+      `You are a senior engineering interviewer at a top product company. Evaluate my ${problem.type.toUpperCase()} interview attempt below.`,
+      ``,
+      `## Problem: ${problem.title} (${problem.difficulty})`,
+      problem.description,
+      ``,
+      `## Requirements`,
+      ...problem.requirements.map((r) => `- ${r}`),
+    ];
+    if (notes.trim()) lines.push(``, `## My explanation (typed + spoken)`, notes.trim());
+    if (codeText.trim())
+      lines.push(``, `## My code`, "```", codeText.trim(), "```");
+    lines.push(
+      ``,
+      `My diagram is attached as an image (exported from my canvas). If you cannot see the image, ask me for it.`,
+      ``,
+      `Evaluate like a real interviewer: give an overall score out of 10, what I did well, what is missing or wrong, how well I communicated, and a prioritized list of improvements. Do not use em dashes.`
+    );
+    return lines.join("\n");
+  }, [problem, notes, codeText]);
+
+  const handleExport = useCallback(
+    async (kind: "prompt" | "png" | "md") => {
+      setExportOpen(false);
+      try {
+        if (kind === "prompt") {
+          await navigator.clipboard.writeText(buildReviewPrompt());
+          setToast("Review prompt copied. Paste it into ChatGPT or Claude and attach the PNG.");
+          return;
+        }
+        if (kind === "png") {
+          const blob = await buildPngBlob();
+          if (!blob) {
+            setToast("Canvas is empty, nothing to export.");
+            return;
+          }
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${problem?.id ?? "design"}-diagram.png`;
+          link.click();
+          URL.revokeObjectURL(url);
+          setToast("Diagram downloaded.");
+          return;
+        }
+        if (kind === "md") {
+          const md = `${buildReviewPrompt()}\n\n---\n\nAttach the diagram PNG you download alongside this file.`;
+          const blob = new Blob([md], { type: "text/markdown" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = url;
+          link.download = `${problem?.id ?? "design"}-attempt.md`;
+          link.click();
+          URL.revokeObjectURL(url);
+          setToast("Attempt exported as Markdown.");
+        }
+      } catch {
+        setToast("Export failed, try again.");
+      }
+    },
+    [buildReviewPrompt, buildPngBlob, problem]
+  );
+
+  // ---------- final submission ----------
+
   const handleSubmit = useCallback(async () => {
     if (!attempt || !problem || submitting) return;
     setSubmitting(true);
@@ -195,31 +293,42 @@ export default function AttemptPage() {
     if (getPrefs().autoSubmit) handleSubmit();
   }, [handleSubmit]);
 
-  // ---- mid-attempt interviewer chat (cheap, text-only) ----
-  const handleAskInterviewer = useCallback(async () => {
-    if (!problem || askingInterviewer || submitting) return;
-    const question = interviewerQuestion.trim() || "Review my progress so far and give me hints.";
-    setAskingInterviewer(true);
-    setError(null);
-    try {
-      const api = excalidrawRef.current;
-      const sceneJson = JSON.stringify({ elements: api?.getSceneElements() ?? [] });
-      const answer = await requestInterviewerHints({
-        problem,
-        diagramOutline: extractDiagramOutline(sceneJson),
-        notes,
-        codeText,
-        question,
-        history: interviewerTurns,
-      });
-      setInterviewerTurns((t) => [...t, { question, answer }]);
-      setInterviewerQuestion("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Interviewer is unavailable, try again");
-    } finally {
-      setAskingInterviewer(false);
-    }
-  }, [problem, notes, codeText, interviewerQuestion, interviewerTurns, askingInterviewer, submitting]);
+  // ---------- interviewer chat ----------
+
+  const handleAskInterviewer = useCallback(
+    async (override?: string) => {
+      if (!problem || askingInterviewer || submitting) return;
+      const question = (override ?? interviewerQuestion).trim() ||
+        "Review my progress so far and give me hints.";
+      setAskingInterviewer(true);
+      setError(null);
+      try {
+        const api = excalidrawRef.current;
+        const sceneJson = JSON.stringify({ elements: api?.getSceneElements() ?? [] });
+        const answer = await requestInterviewerHints({
+          problem,
+          diagramOutline: extractDiagramOutline(sceneJson),
+          notes,
+          codeText,
+          question,
+          history: interviewerTurns,
+        });
+        setInterviewerTurns((t) => [...t, { question, answer }]);
+        setInterviewerQuestion("");
+        if (panelTab !== "interviewer") setUnreadInterviewer(true);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Interviewer is unavailable, try again");
+      } finally {
+        setAskingInterviewer(false);
+      }
+    },
+    [problem, notes, codeText, interviewerQuestion, interviewerTurns, askingInterviewer, submitting, panelTab]
+  );
+
+  const switchTab = (tab: PanelTab) => {
+    setPanelTab(tab);
+    if (tab === "interviewer") setUnreadInterviewer(false);
+  };
 
   // ---- loading / not found ----
   if (loading) return <Spinner label="Loading attempt…" />;
@@ -260,9 +369,46 @@ export default function AttemptPage() {
               {label}
             </button>
           ))}
-          <span className="ml-auto pr-2 text-xs text-slate-400 dark:text-slate-500">
-            {problem.type.toUpperCase()} · auto-saved
-          </span>
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setExportOpen((o) => !o)}
+              className="btn-secondary px-3 py-1 text-xs"
+            >
+              ⤓ Export
+            </button>
+            {exportOpen && (
+              <>
+                <button
+                  className="fixed inset-0 z-40 cursor-default"
+                  onClick={() => setExportOpen(false)}
+                  aria-label="Close export menu"
+                />
+                <div className="card absolute right-0 z-50 mt-1 w-72 p-1.5 text-sm shadow-lg">
+                  <button
+                    onClick={() => handleExport("prompt")}
+                    className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    📋 Copy AI review prompt
+                    <span className="mt-0.5 block text-[10px] text-slate-400">
+                      Paste into ChatGPT or Claude, then attach the PNG
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => handleExport("png")}
+                    className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    🖼 Download diagram (PNG)
+                  </button>
+                  <button
+                    onClick={() => handleExport("md")}
+                    className="w-full rounded-lg px-3 py-2 text-left text-xs hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    📄 Download attempt (.md)
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <div className="min-h-0 flex-1">
@@ -291,9 +437,9 @@ export default function AttemptPage() {
         </div>
       </section>
 
-      {/* ---------- Right: interactive panel (everything reachable, nothing clipped) ---------- */}
-      <aside className="flex min-h-0 min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-900 lg:w-[380px] lg:flex-none lg:border-l lg:border-slate-200 lg:dark:border-slate-800">
-        {/* problem + timer */}
+      {/* ---------- Right: focused interactive panel ---------- */}
+      <aside className="flex min-h-0 min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-900 lg:w-[400px] lg:flex-none lg:border-l lg:border-slate-200 lg:dark:border-slate-800">
+        {/* header: title, timer, brief */}
         <div className="shrink-0 border-b border-slate-200 p-3 dark:border-slate-800">
           <div className="flex items-center justify-between gap-2">
             <h2 className="truncate text-sm font-semibold">{problem.title}</h2>
@@ -306,7 +452,7 @@ export default function AttemptPage() {
             {briefOpen ? "Hide problem brief" : "Read the problem brief"}
           </button>
           {briefOpen && (
-            <div className="mt-2 max-h-40 overflow-y-auto rounded-lg bg-white p-3 text-xs leading-relaxed text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+            <div className="mt-2 max-h-36 overflow-y-auto rounded-lg bg-white p-3 text-xs leading-relaxed text-slate-600 dark:bg-slate-950 dark:text-slate-300">
               <p className="mb-2">{problem.description}</p>
               <p className="mb-1 font-semibold text-slate-500 dark:text-slate-400">Requirements:</p>
               <ul className="space-y-1">
@@ -321,71 +467,130 @@ export default function AttemptPage() {
           )}
         </div>
 
-        {/* interviewer thread (scrolls, absorbs remaining space) */}
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-          {interviewerTurns.map((turn, i) => (
-            <div key={i} className="space-y-2">
-              <div className="ml-auto w-fit max-w-[90%] rounded-xl rounded-br-sm bg-indigo-600 px-3 py-2 text-xs text-white">
-                {turn.question}
-              </div>
-              <div className="w-fit max-w-[95%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
-                🎤 {turn.answer}
-              </div>
-            </div>
+        {/* tabs */}
+        <div className="flex shrink-0 gap-1 border-b border-slate-200 px-3 pt-2 dark:border-slate-800">
+          {(
+            [
+              ["interviewer", "💬 Interviewer"],
+              ["response", "📝 Response"],
+            ] as [PanelTab, string][]
+          ).map(([tab, label]) => (
+            <button
+              key={tab}
+              onClick={() => switchTab(tab)}
+              className={`relative rounded-t-lg px-4 py-2 text-sm font-medium transition-colors ${
+                panelTab === tab
+                  ? "border-b-2 border-indigo-500 text-indigo-600 dark:text-indigo-300"
+                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+              }`}
+            >
+              {label}
+              {tab === "interviewer" && unreadInterviewer && (
+                <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500" />
+              )}
+            </button>
           ))}
-          {interviewerTurns.length === 0 && (
-            <p className="pt-2 text-center text-xs text-slate-400 dark:text-slate-500">
-              Stuck or curious? Ask the interviewer anything: "What am I missing?", "Is my fee
-              calculation extensible?", "What would you probe next?"
-            </p>
-          )}
-          {askingInterviewer && <Spinner label="Interviewer is reviewing your progress…" />}
         </div>
 
-        {/* pinned bottom: response + chat input + submit (never clipped, always clickable) */}
-        <div className="shrink-0 space-y-2.5 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
-          <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            Your response, speak or type
-          </label>
-          <MicButton
-            supported={speech.supported}
-            listening={speech.listening}
-            interim={speech.interim}
-            onStart={speech.start}
-            onStop={speech.stop}
-          />
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={3}
-            placeholder="Explain your design, assumptions and trade-offs. Whatever you speak is written here."
-            className="input resize-y"
-          />
-          {speech.error && <p className="text-xs text-red-500">{speech.error}</p>}
+        {/* Interviewer tab: chat thread */}
+        {panelTab === "interviewer" && (
+          <>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+              {interviewerTurns.map((turn, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="ml-auto w-fit max-w-[90%] rounded-xl rounded-br-sm bg-indigo-600 px-3 py-2 text-xs text-white">
+                    {turn.question}
+                  </div>
+                  <div className="w-fit max-w-[95%] whitespace-pre-wrap rounded-xl rounded-bl-sm bg-white px-3 py-2 text-xs leading-relaxed text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
+                    {turn.answer}
+                  </div>
+                </div>
+              ))}
+              {interviewerTurns.length === 0 && (
+                <div className="flex h-full flex-col items-center justify-center gap-3 px-2 text-center">
+                  <p className="text-xs text-slate-400 dark:text-slate-500">
+                    Your interviewer is watching the canvas. Ask anything, or tap a shortcut:
+                  </p>
+                  <div className="flex flex-col items-stretch gap-2">
+                    {CHAT_SUGGESTIONS.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => handleAskInterviewer(s)}
+                        disabled={askingInterviewer}
+                        className="rounded-full border border-slate-300 px-4 py-1.5 text-xs text-slate-600 transition-colors hover:border-indigo-400 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300"
+                      >
+                        {s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {askingInterviewer && <Spinner label="Interviewer is reviewing your canvas…" />}
+              <div ref={threadEndRef} />
+            </div>
 
-          {error && <ErrorBox message={error} />}
+            {/* chat input (pinned) */}
+            <div className="shrink-0 space-y-2 border-t border-slate-200 p-3 dark:border-slate-800">
+              {error && <ErrorBox message={error} />}
+              <div className="flex gap-2">
+                <input
+                  value={interviewerQuestion}
+                  onChange={(e) => setInterviewerQuestion(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAskInterviewer()}
+                  placeholder="Ask the interviewer…"
+                  className="input flex-1"
+                />
+                <button
+                  onClick={() => handleAskInterviewer()}
+                  disabled={askingInterviewer || submitting}
+                  className="btn-primary shrink-0"
+                >
+                  Ask
+                </button>
+              </div>
+            </div>
+          </>
+        )}
 
-          <div className="flex gap-2">
-            <input
-              value={interviewerQuestion}
-              onChange={(e) => setInterviewerQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAskInterviewer()}
-              placeholder="Ask the interviewer…"
-              className="input flex-1"
+        {/* Response tab: capture studio */}
+        {panelTab === "response" && (
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            {error && <ErrorBox message={error} />}
+            <MicButton
+              supported={speech.supported}
+              listening={speech.listening}
+              interim={speech.interim}
+              onStart={speech.start}
+              onStop={speech.stop}
             />
-            <button
-              onClick={handleAskInterviewer}
-              disabled={askingInterviewer || submitting}
-              className="btn-secondary shrink-0"
-            >
-              💬 Ask
-            </button>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Explain your design, assumptions and trade-offs. Whatever you speak is written here."
+              className="input min-h-[220px] resize-none"
+            />
+            <p className="text-[10px] text-slate-400 dark:text-slate-500">
+              {speech.supported
+                ? "Tap the mic and speak. Everything in this box is sent to the interviewer when you submit."
+                : "This box is sent to the interviewer when you submit."}
+            </p>
           </div>
+        )}
+
+        {/* pinned submit bar (visible from both tabs) */}
+        <div className="shrink-0 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
           <button onClick={handleSubmit} disabled={submitting} className="btn-primary w-full">
             🏁 Submit final design
           </button>
         </div>
       </aside>
+
+      {/* toast */}
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 z-[60] -translate-x-1/2 rounded-full bg-slate-900 px-5 py-2.5 text-xs text-white shadow-xl dark:bg-slate-100 dark:text-slate-900">
+          {toast}
+        </div>
+      )}
 
       {/* submitting overlay */}
       {submitting && (
