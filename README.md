@@ -7,30 +7,30 @@ Built for engineers with ~2 years of experience preparing for product-company in
 
 ## How it works
 
-1. **Pick a problem** from the library — 10 LLD (machine-coding classics) + 10 HLD (system design
+1. **Pick a problem** from the library, 10 LLD (machine-coding classics) + 10 HLD (system design
    staples), each with requirements and a realistic time limit.
 2. **Attempt it** on a full-height Excalidraw canvas, or switch to **Code mode** to write classes,
    SQL schemas, or pseudocode.
-3. **Speak or type** your reasoning into the response box — the mic writes directly into it.
-4. **Ask the interviewer** mid-attempt for hints (cheap, text-only — it nudges, it doesn't solve).
+3. **Speak or type** your reasoning into the response box, the mic writes directly into it.
+4. **Ask the interviewer** mid-attempt for hints (cheap, text-only, it nudges, it doesn't solve).
 5. **Submit final design** → one multimodal Gemini call analyzes your diagram (image + outline),
    response, and code, and returns a detailed evaluation: overall score, dimension breakdown,
    strengths, gaps, a prioritized improvement checklist, and a reference solution outline.
-6. **Follow up** — chat with the interviewer about your attempt, then retry and watch your score
+6. **Follow up**, chat with the interviewer about your attempt, then retry and watch your score
    trend improve on the History page.
 
 No login. All attempts are stored locally in your browser (IndexedDB + localStorage).
 
 ## Tech stack
 
-- **React 18 + TypeScript + Vite** — app shell
-- **@excalidraw/excalidraw** — the drawing canvas
-- **Web Speech API** — browser-native speech-to-text (Chrome/Edge/Safari 14.1+)
-- **Tailwind CSS** — minimal, dark-mode UI
-- **idb-keyval** — IndexedDB wrapper for attempt storage
-- **Vercel serverless functions** — `/api/feedback`, `/api/interviewer`, `/api/chat` proxy the
+- **React 18 + TypeScript + Vite**, app shell
+- **@excalidraw/excalidraw**, the drawing canvas
+- **Web Speech API**, browser-native speech-to-text (Chrome/Edge/Safari 14.1+)
+- **Tailwind CSS**, minimal, dark-mode UI
+- **idb-keyval**, IndexedDB wrapper for attempt storage
+- **Vercel serverless functions**, `/api/feedback`, `/api/interviewer`, `/api/chat` proxy the
   Gemini API so the key never ships to the browser
-- **Gemini** (`gemini-3.8-flash`) — structured JSON output for deterministic feedback
+- **Gemini** (`gemini-3.8-flash`), structured JSON output for deterministic feedback
 
 ## Running locally
 
@@ -47,10 +47,10 @@ npm run dev
 ## Deploying to Vercel
 
 1. Push this repo to GitHub (it already contains `vercel.json`).
-2. Import the repo in Vercel — the framework preset (Vite) and build settings are auto-detected.
+2. Import the repo in Vercel, the framework preset (Vite) and build settings are auto-detected.
 3. Add environment variables in **Project Settings → Environment Variables**:
-   - `GEMINI_API_KEY` — your Gemini API key (required, server-side only)
-   - `GEMINI_MODEL` — optional, defaults to `gemini-3.8-flash`
+   - `GEMINI_API_KEY`, your Gemini API key (required, server-side only)
+   - `GEMINI_MODEL`, optional, defaults to `gemini-3.8-flash`
 4. Deploy. Every push to `main` redeploys automatically.
 
 ## Cost notes

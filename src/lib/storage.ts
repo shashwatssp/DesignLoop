@@ -113,7 +113,7 @@ export function saveDraft(
       JSON.stringify({ attemptId, problemId, scene, notes, codeText, savedAt: Date.now() })
     );
   } catch {
-    // Storage full or unavailable — drafts are best-effort.
+    // Storage full or unavailable, drafts are best-effort.
   }
 }
 

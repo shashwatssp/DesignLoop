@@ -1,5 +1,5 @@
 // Vercel serverless function (CommonJS, Node runtime).
-// POST /api/chat — post-feedback follow-up conversation. Text-only.
+// POST /api/chat, post-feedback follow-up conversation. Text-only.
 // Body: { problem, diagramOutline, notes, codeText, feedback, history, question }
 // Returns: { answer: string }
 
@@ -12,7 +12,10 @@ const TEXT_ANSWER_SCHEMA = {
   required: ["answer"],
 };
 
-const CHAT_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", continuing a conversation with a candidate about their evaluated LLD/HLD design attempt. You already scored their submission. Be concise (max 200 words), specific, reference their actual design, and when relevant teach the correct approach. Respond ONLY with JSON matching the schema {"answer": string}.`;
+const CHAT_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", continuing a conversation with a candidate about their evaluated LLD/HLD design attempt. You already scored their submission. Be concise (max 200 words), specific, reference their actual design, and when relevant teach the correct approach.
+
+Never use em dashes (the long dash character) anywhere in your output. Use commas, colons or periods instead.
+Respond ONLY with JSON matching the schema {"answer": string}.`;
 
 function buildGeminiBody(input) {
   const { problem, diagramOutline, notes, codeText, feedback, history, question } = input;

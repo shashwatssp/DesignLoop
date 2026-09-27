@@ -117,7 +117,7 @@ export default function FeedbackView({ feedback }: { feedback: Feedback }) {
       {/* improvements */}
       <div className="card p-6">
         <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-          🎯 How to improve — do this next time
+          🎯 How to improve: do this next time
         </h3>
         <ul className="space-y-2.5">
           {feedback.improvements.map((imp, i) => (

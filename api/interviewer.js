@@ -1,5 +1,5 @@
 // Vercel serverless function (CommonJS, Node runtime).
-// POST /api/interviewer — mid-attempt interviewer hints. Text-only and cheap.
+// POST /api/interviewer, mid-attempt interviewer hints. Text-only and cheap.
 // Body: { problem, diagramOutline, notes, codeText, history: [{question, answer}] }
 // Returns: { answer: string }
 
@@ -12,18 +12,20 @@ const TEXT_ANSWER_SCHEMA = {
   required: ["answer"],
 };
 
-const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. The candidate shares their progress so far (diagram outline, notes, code).
+const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. The candidate shares their progress so far (diagram outline, notes, code) and often asks you a question or requests hints.
 
 Respond as an interviewer would mid-interview:
 - Briefly acknowledge what they have done well so far (1-2 sentences, reference their actual components).
-- Give AT MOST 2 gentle hints — nudges toward gaps or risks, never the full answer (e.g., "What happens if two requests claim the same resource at once?").
+- Answer their question if they asked one.
+- Give AT MOST 2 gentle hints, nudges toward gaps or risks, never the full answer (e.g., "What happens if two requests claim the same resource at once?").
 - Ask 1-2 probing questions a real interviewer would ask next.
 - Do NOT score. Do NOT give the complete solution. Keep the whole response under 150 words.
 
+Never use em dashes (the long dash character) anywhere in your output. Use commas, colons or periods instead.
 Respond ONLY with JSON matching the schema {"answer": string}.`;
 
 function buildGeminiBody(input) {
-  const { problem, diagramOutline, notes, codeText, history } = input;
+  const { problem, diagramOutline, notes, codeText, question, history } = input;
   const text = [
     INTERVIEWER_SYSTEM_PROMPT,
     ``,
@@ -43,6 +45,8 @@ function buildGeminiBody(input) {
     ``,
     `CODE SUBMISSION:`,
     (codeText || "").trim() ? String(codeText).slice(0, 8000) : "(none)",
+    ``,
+    `CANDIDATE'S MESSAGE: ${(question || "").trim() || "Review my progress so far and give me hints."}`,
   ].join("\n");
 
   const contents = [];
@@ -75,7 +79,7 @@ module.exports = async function handler(req, res) {
     return;
   }
   try {
-    const { problem, diagramOutline, notes, codeText, history } = req.body || {};
+    const { problem, diagramOutline, notes, codeText, question, history } = req.body || {};
     if (!problem) {
       res.status(400).json({ error: "Missing problem in request body" });
       return;
@@ -90,7 +94,7 @@ module.exports = async function handler(req, res) {
     const r = await fetch(`${API_BASE}/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-      body: JSON.stringify(buildGeminiBody({ problem, diagramOutline, notes, codeText, history })),
+      body: JSON.stringify(buildGeminiBody({ problem, diagramOutline, notes, codeText, question, history })),
     });
     const data = await r.json();
     if (!r.ok) {

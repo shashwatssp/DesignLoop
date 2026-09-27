@@ -44,6 +44,7 @@ export default function AttemptPage() {
   const [mode, setMode] = useState<Mode>("diagram");
   const [briefOpen, setBriefOpen] = useState(true);
   const [interviewerTurns, setInterviewerTurns] = useState<InterviewerTurn[]>([]);
+  const [interviewerQuestion, setInterviewerQuestion] = useState("");
   const [askingInterviewer, setAskingInterviewer] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,9 +195,10 @@ export default function AttemptPage() {
     if (getPrefs().autoSubmit) handleSubmit();
   }, [handleSubmit]);
 
-  // ---- mid-attempt interviewer hints (cheap, text-only) ----
+  // ---- mid-attempt interviewer chat (cheap, text-only) ----
   const handleAskInterviewer = useCallback(async () => {
     if (!problem || askingInterviewer || submitting) return;
+    const question = interviewerQuestion.trim() || "Review my progress so far and give me hints.";
     setAskingInterviewer(true);
     setError(null);
     try {
@@ -207,15 +209,17 @@ export default function AttemptPage() {
         diagramOutline: extractDiagramOutline(sceneJson),
         notes,
         codeText,
+        question,
         history: interviewerTurns,
       });
-      setInterviewerTurns((t) => [...t, { question: "Review my progress so far", answer }]);
+      setInterviewerTurns((t) => [...t, { question, answer }]);
+      setInterviewerQuestion("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Interviewer is unavailable, try again");
     } finally {
       setAskingInterviewer(false);
     }
-  }, [problem, notes, codeText, interviewerTurns, askingInterviewer, submitting]);
+  }, [problem, notes, codeText, interviewerQuestion, interviewerTurns, askingInterviewer, submitting]);
 
   // ---- loading / not found ----
   if (loading) return <Spinner label="Loading attempt…" />;
@@ -231,10 +235,13 @@ export default function AttemptPage() {
   }
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-14 flex flex-col lg:flex-row">
+    <div
+      className="fixed inset-x-0 bottom-0 top-14 flex flex-col lg:flex-row"
+      style={{ height: "calc(100dvh - 3.5rem)" }}
+    >
       {/* ---------- Left: canvas / code ---------- */}
-      <section className="relative flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center gap-1 border-b border-slate-200 bg-white px-3 py-1.5 dark:border-slate-800 dark:bg-slate-900">
+      <section className="flex h-[42vh] shrink-0 flex-col border-b border-slate-200 dark:border-slate-800 lg:h-auto lg:min-h-0 lg:flex-1 lg:border-b-0">
+        <div className="flex shrink-0 items-center gap-1 bg-white px-3 py-1.5 dark:bg-slate-900">
           {(
             [
               ["diagram", "✏️ Diagram"],
@@ -284,22 +291,22 @@ export default function AttemptPage() {
         </div>
       </section>
 
-      {/* ---------- Right: interactive panel ---------- */}
-      <aside className="flex w-full shrink-0 flex-col border-l border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900 lg:w-[360px]">
+      {/* ---------- Right: interactive panel (everything reachable, nothing clipped) ---------- */}
+      <aside className="flex min-h-0 min-w-0 flex-1 flex-col bg-slate-50 dark:bg-slate-900 lg:w-[380px] lg:flex-none lg:border-l lg:border-slate-200 lg:dark:border-slate-800">
         {/* problem + timer */}
-        <div className="border-b border-slate-200 p-4 dark:border-slate-800">
+        <div className="shrink-0 border-b border-slate-200 p-3 dark:border-slate-800">
           <div className="flex items-center justify-between gap-2">
             <h2 className="truncate text-sm font-semibold">{problem.title}</h2>
             <Timer endsAt={endsAt} running={!submitting} onExpire={handleExpire} />
           </div>
           <button
             onClick={() => setBriefOpen((o) => !o)}
-            className="mt-1 text-xs text-indigo-500 hover:underline"
+            className="mt-0.5 text-xs text-indigo-500 hover:underline"
           >
             {briefOpen ? "Hide problem brief" : "Read the problem brief"}
           </button>
           {briefOpen && (
-            <div className="mt-2 max-h-56 overflow-y-auto rounded-lg bg-white p-3 text-xs leading-relaxed text-slate-600 dark:bg-slate-950 dark:text-slate-300">
+            <div className="mt-2 max-h-40 overflow-y-auto rounded-lg bg-white p-3 text-xs leading-relaxed text-slate-600 dark:bg-slate-950 dark:text-slate-300">
               <p className="mb-2">{problem.description}</p>
               <p className="mb-1 font-semibold text-slate-500 dark:text-slate-400">Requirements:</p>
               <ul className="space-y-1">
@@ -314,8 +321,8 @@ export default function AttemptPage() {
           )}
         </div>
 
-        {/* interviewer thread */}
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+        {/* interviewer thread (scrolls, absorbs remaining space) */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
           {interviewerTurns.map((turn, i) => (
             <div key={i} className="space-y-2">
               <div className="ml-auto w-fit max-w-[90%] rounded-xl rounded-br-sm bg-indigo-600 px-3 py-2 text-xs text-white">
@@ -326,13 +333,19 @@ export default function AttemptPage() {
               </div>
             </div>
           ))}
+          {interviewerTurns.length === 0 && (
+            <p className="pt-2 text-center text-xs text-slate-400 dark:text-slate-500">
+              Stuck or curious? Ask the interviewer anything: "What am I missing?", "Is my fee
+              calculation extensible?", "What would you probe next?"
+            </p>
+          )}
           {askingInterviewer && <Spinner label="Interviewer is reviewing your progress…" />}
         </div>
 
-        {/* response box + actions */}
-        <div className="space-y-3 border-t border-slate-200 p-4 dark:border-slate-800">
+        {/* pinned bottom: response + chat input + submit (never clipped, always clickable) */}
+        <div className="shrink-0 space-y-2.5 border-t border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900">
           <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-            Your response — speak or type
+            Your response, speak or type
           </label>
           <MicButton
             supported={speech.supported}
@@ -344,26 +357,33 @@ export default function AttemptPage() {
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            rows={5}
-            placeholder="Explain your design, assumptions and trade-offs… whatever you speak is written here. You can also type."
+            rows={3}
+            placeholder="Explain your design, assumptions and trade-offs. Whatever you speak is written here."
             className="input resize-y"
           />
           {speech.error && <p className="text-xs text-red-500">{speech.error}</p>}
 
           {error && <ErrorBox message={error} />}
 
-          <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              value={interviewerQuestion}
+              onChange={(e) => setInterviewerQuestion(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAskInterviewer()}
+              placeholder="Ask the interviewer…"
+              className="input flex-1"
+            />
             <button
               onClick={handleAskInterviewer}
               disabled={askingInterviewer || submitting}
-              className="btn-secondary"
+              className="btn-secondary shrink-0"
             >
-              💬 Ask the interviewer for hints
-            </button>
-            <button onClick={handleSubmit} disabled={submitting} className="btn-primary">
-              🏁 Submit final design
+              💬 Ask
             </button>
           </div>
+          <button onClick={handleSubmit} disabled={submitting} className="btn-primary w-full">
+            🏁 Submit final design
+          </button>
         </div>
       </aside>
 

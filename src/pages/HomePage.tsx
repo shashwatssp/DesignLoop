@@ -41,7 +41,7 @@ export default function HomePage() {
         </p>
         {totalAttempts > 0 && (
           <p className="mt-2 text-sm text-slate-500 dark:text-slate-500">
-            {totalAttempts} attempt{totalAttempts > 1 ? "s" : ""} so far — keep the loop going.
+            {totalAttempts} attempt{totalAttempts > 1 ? "s" : ""} so far, keep the loop going.
           </p>
         )}
       </section>

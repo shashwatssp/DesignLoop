@@ -79,7 +79,7 @@ export function useSpeechRecognition(lang = "en-US") {
         setListening(false);
         setError("No microphone found.");
       } else if (kind === "network") {
-        setError("Speech recognition network error — retrying.");
+        setError("Speech recognition network error, retrying.");
       }
       // 'no-speech' and 'aborted' are transient; the onend restart handles them.
     };

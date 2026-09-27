@@ -11,7 +11,7 @@ export const PROBLEMS: Problem[] = [
     description:
       "Design the object-oriented model for a multi-level parking lot. The lot has multiple floors, each with spots of different types (motorcycle, car, truck). Vehicles are issued a ticket on entry and pay on exit. Support spot allocation, freeing, and a display board showing availability per floor.",
     requirements: [
-      "Support different vehicle types: motorcycle, car, truck — each needs a compatible spot type",
+      "Support different vehicle types: motorcycle, car, truck, each needs a compatible spot type",
       "Support different spot types per floor and find the first available spot for a vehicle",
       "Issue a ticket on entry with entry time and assigned spot; compute fee on exit",
       "Fee computation should be extensible (e.g., flat rate per hour now, per-vehicle-type rates later)",
@@ -40,8 +40,8 @@ export const PROBLEMS: Problem[] = [
     description:
       "Design a Least Recently Used (LRU) cache with O(1) get and put. The cache has a fixed capacity; when it is full, the least recently used entry is evicted. Discuss how you would make it thread-safe for concurrent use.",
     requirements: [
-      "get(key) returns the value and marks the entry as most recently used — O(1)",
-      "put(key, value) inserts or updates and marks the entry most recently used — O(1)",
+      "get(key) returns the value and marks the entry as most recently used, O(1)",
+      "put(key, value) inserts or updates and marks the entry most recently used, O(1)",
       "When capacity is exceeded, evict the least recently used entry",
       "Support invalidating or removing a key",
       "Discuss thread-safety: what breaks with concurrent get/put and how to fix it",
@@ -68,10 +68,10 @@ export const PROBLEMS: Problem[] = [
     requirements: [
       "Model Floors, Direction (up/down/idle), and ElevatorState (idle, moving, doorsOpen, maintenance)",
       "Internal requests (panel inside the car) and external requests (hall buttons with direction)",
-      "Request scheduling in an efficient order — e.g., LOOK: keep moving in the current direction while requests exist ahead",
+      "Request scheduling in an efficient order, e.g., LOOK: keep moving in the current direction while requests exist ahead",
       "Doors open/close with a door-open timeout",
       "Handle overload sensor and emergency stop",
-      "Extension: coordinate multiple elevators (group controller) — at least discuss the interface",
+      "Extension: coordinate multiple elevators (group controller), at least discuss the interface",
     ],
     expectedComponents: [
       "Elevator / ElevatorCar class with state and current floor",
@@ -91,7 +91,7 @@ export const PROBLEMS: Problem[] = [
     difficulty: "medium",
     timeLimitMin: 40,
     description:
-      "Design the backend model for an expense-sharing app like Splitwise. Users form groups, add expenses that are paid by one or more users and split among participants (equally, by exact amounts, by percentage, or by shares). The system must compute the simplified net balances — who owes whom how much overall.",
+      "Design the backend model for an expense-sharing app like Splitwise. Users form groups, add expenses that are paid by one or more users and split among participants (equally, by exact amounts, by percentage, or by shares). The system must compute the simplified net balances, who owes whom how much overall.",
     requirements: [
       "Model User, Group, Expense with paid-by and split-among participants",
       "Support split types: equal, exact amounts, percentage, shares (Strategy pattern)",
@@ -119,7 +119,7 @@ export const PROBLEMS: Problem[] = [
     difficulty: "medium",
     timeLimitMin: 40,
     description:
-      "Design the core of a movie ticket booking system. Users search movies by city, view shows in a theatre with a seat layout, select seats, and pay. The hard part: two users must never be able to book the same seat — handle seat locking with a temporary hold that expires if payment is not completed.",
+      "Design the core of a movie ticket booking system. Users search movies by city, view shows in a theatre with a seat layout, select seats, and pay. The hard part: two users must never be able to book the same seat, handle seat locking with a temporary hold that expires if payment is not completed.",
     requirements: [
       "Model Movie, Theatre, Screen, Show, Seat, SeatType (regular, premium, recliner)",
       "Search movies by city and list shows per theatre",
@@ -176,7 +176,7 @@ export const PROBLEMS: Problem[] = [
     description:
       "Design a Snake and Ladder game for 2–4 players on a 100-cell board with a configurable number of snakes, ladders, and dice. Players take turns rolling the dice; the first to reach exactly 100 wins. Make the board setup configurable at runtime.",
     requirements: [
-      "Model Board with size, snakes (head→tail), ladders (bottom→top) — configurable at game creation",
+      "Model Board with size, snakes (head→tail), ladders (bottom→top), configurable at game creation",
       "Player with name and current position; multiple players in turn order",
       "Dice with configurable count and number of faces",
       "Game rules: exact roll to finish (or discuss overshoot handling), one dice roll per turn",
@@ -187,7 +187,7 @@ export const PROBLEMS: Problem[] = [
     expectedComponents: [
       "Board with snakes/ladders maps and cell validation",
       "Player class with position",
-      "Dice class (sides, roll()) — random provider injectable for testability",
+      "Dice class (sides, roll()), random provider injectable for testability",
       "Game / GameManager with turn state machine and winner detection",
       "MoveResult or TurnResult describing dice roll → final position",
       "BoardBuilder / configuration input",
@@ -231,7 +231,7 @@ export const PROBLEMS: Problem[] = [
       "Design a pluggable logging framework: log statements with levels (DEBUG, INFO, WARN, ERROR, FATAL) flow through configurable sinks (console, file, external service) with formatting and level filtering. New sinks and formats must be addable without modifying core code.",
     requirements: [
       "LogLevel enum with ordering; messages logged at a level are routed to sinks configured for that level or higher severity",
-      "Log sinks: ConsoleSink, FileSink — pluggable Sink interface (Observer/extensibility)",
+      "Log sinks: ConsoleSink, FileSink, pluggable Sink interface (Observer/extensibility)",
       "LogMessage with timestamp, level, namespace, message",
       "LogFormatter interface with simple and JSON formatters",
       "Thread-safe logging (multiple threads logging concurrently)",
@@ -259,7 +259,7 @@ export const PROBLEMS: Problem[] = [
       "Design a rate limiter that allows N requests per client per time window. Support configurable rules (e.g., 100 requests/minute per API key, 10,000/hour per IP), with both fixed-window and sliding-window strategies. Discuss how this works when the limiter is distributed across servers.",
     requirements: [
       "Rule model: clientId (API key or IP), maxRequests, window duration",
-      "allowRequest(clientId) returns allow/deny — O(1)-ish per check",
+      "allowRequest(clientId) returns allow/deny, O(1)-ish per check",
       "Implement fixed window counter strategy",
       "Implement sliding window log (timestamps queue) or sliding window counter strategy",
       "Strategy pattern so new algorithms (token bucket, leaky bucket) plug in",
@@ -290,10 +290,10 @@ export const PROBLEMS: Problem[] = [
       "Shorten(longUrl, optional custom alias, optional expiry) → short URL; must handle duplicate long URLs",
       "redirect(shortUrl) → 301/302 to the original URL",
       "Estimate scale: read-heavy (assume 100:1 read:write); back-of-envelope numbers for storage and QPS",
-      "Key generation: base62 encoding of a counter vs hash-based (collision handling) — pick one and justify",
+      "Key generation: base62 encoding of a counter vs hash-based (collision handling), pick one and justify",
       "Storage schema for URL mappings with TTL/expiry support",
       "Caching layer (read-through cache) and cache invalidation considerations",
-      "Analytics: click counts, unique visitors — where does this data flow?",
+      "Analytics: click counts, unique visitors, where does this data flow?",
       "Discuss 301 vs 302 redirects and their trade-offs",
     ],
     expectedComponents: [
@@ -349,7 +349,7 @@ export const PROBLEMS: Problem[] = [
       "Video ingestion: upload → transcode into multiple resolutions/bitrates (ABR ladder) → chunk into segments",
       "Storage: where do terabytes of video live? Object storage + multi-CDN distribution",
       "Playback: adaptive bitrate streaming (HLS/DASH), client asks manifest, pulls segments from CDN",
-      "Metadata service: catalog, titles, artwork — read-heavy, cached/CDN-fronted",
+      "Metadata service: catalog, titles, artwork, read-heavy, cached/CDN-fronted",
       "Recommendations/watch history: user profile service, event pipeline for viewing activity",
       "DRM/licensing: token-authorized playback at a high level",
       "Global scale: geo-distribution, CDN strategy, origin shielding",
@@ -376,8 +376,8 @@ export const PROBLEMS: Problem[] = [
     description:
       "Design a ride-hailing backend like Uber: riders request rides, the system matches them to nearby drivers in seconds, tracks the trip in realtime, handles surge pricing, and processes payments. The core challenge is the realtime geo-index and matching loop.",
     requirements: [
-      "Driver location updates every few seconds — ingest and store efficiently (in-memory geo-index)",
-      "Geo-index for 'find drivers near me': geohash/quadtree/S2 — pick one, justify, discuss cell sizing",
+      "Driver location updates every few seconds, ingest and store efficiently (in-memory geo-index)",
+      "Geo-index for 'find drivers near me': geohash/quadtree/S2, pick one, justify, discuss cell sizing",
       "Ride request → matching service: propose to nearby drivers, first-accept wins (avoid double-assign)",
       "Trip lifecycle state machine: requested → matched → in-progress → completed/cancelled",
       "Realtime tracking of the active trip for both parties",
@@ -407,7 +407,7 @@ export const PROBLEMS: Problem[] = [
     requirements: [
       "Post a tweet (text, media); tweets appear in followers' home timelines",
       "Follow/unfollow; follower graph at massive scale",
-      "Home timeline generation: fan-out-on-write vs fan-out-on-read vs hybrid — explain clearly and justify the hybrid for celebrities",
+      "Home timeline generation: fan-out-on-write vs fan-out-on-read vs hybrid, explain clearly and justify the hybrid for celebrities",
       "User timeline (own tweets) vs home timeline distinction",
       "Feed pagination (cursor-based) and new-tweet insertion",
       "Notification generation for likes/retweets/mentions (async pipeline)",
@@ -432,10 +432,10 @@ export const PROBLEMS: Problem[] = [
     difficulty: "medium",
     timeLimitMin: 45,
     description:
-      "Design a scalable web crawler for a search engine: start from seed URLs, download pages, extract links, and repeat — crawling billions of pages politely (no hammering a single host) and efficiently (dedup, priority). Cover the crawl loop, dedup at scale, and politeness constraints.",
+      "Design a scalable web crawler for a search engine: start from seed URLs, download pages, extract links, and repeat, crawling billions of pages politely (no hammering a single host) and efficiently (dedup, priority). Cover the crawl loop, dedup at scale, and politeness constraints.",
     requirements: [
       "Crawl loop: URL frontier → fetcher → parser → link extractor → back to frontier",
-      "Billions of URLs: dedup of seen URLs — what data structure at this scale (Bloom filter + DB)?",
+      "Billions of URLs: dedup of seen URLs, what data structure at this scale (Bloom filter + DB)?",
       "Politeness: per-host rate limits, robots.txt compliance, don't fetch same host concurrently",
       "Prioritized frontier: fresher/more important pages first (PageRank hints, recency)",
       "Distributed design: multiple crawler nodes, URL-to-node assignment by host hash",
@@ -497,7 +497,7 @@ export const PROBLEMS: Problem[] = [
       "Order lifecycle state machine: placed → accepted → preparing → picked up → delivered (with cancelled/refund branches)",
       "Delivery partner assignment: find nearby available partners, offer → first-accept-wins, expand radius on timeout",
       "Realtime tracking: partner location updates every ~5 seconds, customer sees live ETA",
-      "Restaurant catalog is read-heavy — caching and search strategy",
+      "Restaurant catalog is read-heavy, caching and search strategy",
       "Order events flow asynchronously to notifications and analytics (queue-based)",
       "Handle peak load (dinner rush): partner location update throughput, order spike",
     ],
@@ -523,7 +523,7 @@ export const PROBLEMS: Problem[] = [
       "Design a push notification system that delivers billions of notifications/day for products like a food-delivery or e-commerce app: transactional notifications (order updates) triggered by events, and campaign/broadcast notifications to user segments. Ensure dedup, prioritization, and user preferences.",
     requirements: [
       "Notification types: transactional (high priority, event-triggered) vs campaigns (bulk, scheduled)",
-      "Multi-channel: FCM (Android), APNs (iOS), email, SMS — device token registry per user",
+      "Multi-channel: FCM (Android), APNs (iOS), email, SMS, device token registry per user",
       "Async pipeline: events → queue → workers → provider APIs; retries with backoff on provider failure",
       "User preferences: per-category opt-in/out respected before send",
       "Dedup and rate limiting (don't send same promo twice/day)",
@@ -552,7 +552,7 @@ export const PROBLEMS: Problem[] = [
       "Design a typeahead service like Google's search suggest: as the user types a prefix, return the top-K most likely completions within ~100ms. Cover the trie/index build, ranking by frequency and recency, personalization, and keeping the index fresh as new queries pour in.",
     requirements: [
       "Top-K completions for a prefix in low latency (target p99 < 100ms)",
-      "Data structure: trie with top-K cached per node vs sorted prefix index — justify memory vs build cost",
+      "Data structure: trie with top-K cached per node vs sorted prefix index, justify memory vs build cost",
       "Ranking: frequency-weighted, with recency decay; personalization as an extension",
       "Index built offline from query logs (MapReduce-style); new index swapped in atomically (blue/green index)",
       "Handle trending queries (incremental layer merged with base index)",

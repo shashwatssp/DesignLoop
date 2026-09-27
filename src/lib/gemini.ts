@@ -1,19 +1,27 @@
 import type { Feedback, Problem } from "../types";
 
 /**
- * Minimal-cost Gemini usage:
- * - "Ask Interviewer" (mid-attempt hints): TEXT-ONLY, tiny output (600 tokens). No image sent.
- * - Final submit: ONE multimodal call (diagram PNG + everything). Output capped at 2048 tokens.
- * - Follow-up chat: text-only, small output (700 tokens).
+ * How Gemini is called, in priority order:
  *
- * In production the browser talks only to our Vercel serverless functions —
- * the Gemini API key never reaches the client. In dev (`vite dev`), /api routes
- * don't exist, so we fall back to direct Gemini REST calls using
- * VITE_GEMINI_API_KEY from .env. This mirrors api/*.js.
+ * 1. DIRECT: if VITE_GEMINI_API_KEY is present (set in .env locally, or in
+ *    Vercel env vars before building), the browser calls the Gemini REST API
+ *    directly. This is the default path on Vercel and in dev.
+ * 2. PROXY: otherwise, requests go to the Vercel serverless functions
+ *    (/api/feedback, /api/interviewer, /api/chat) which use a server-side
+ *    GEMINI_API_KEY. The key then never reaches the browser.
+ *
+ * Cost discipline:
+ * - "Ask Interviewer" (mid-attempt): text-only, 600-token output cap.
+ * - Final submit: ONE multimodal call, 2048-token output cap.
+ * - Follow-up chat: text-only, 700-token output cap.
  */
 
 const GEMINI_MODEL = "gemini-3.8-flash";
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+
+const DIRECT_KEY: string | undefined = import.meta.env.VITE_GEMINI_API_KEY;
+
+const NO_EM_DASH_RULE = `Never use em dashes (the long dash character) anywhere in your output. Use commas, colons or periods instead.`;
 
 const FEEDBACK_SCHEMA = {
   type: "OBJECT",
@@ -94,6 +102,7 @@ export interface InterviewerRequest {
   diagramOutline: string;
   notes: string;
   codeText: string;
+  question: string;
   history: { question: string; answer: string }[];
 }
 
@@ -109,53 +118,40 @@ export interface ChatRequest {
 
 /** Mid-attempt: cheap text-only interviewer hints. */
 export async function requestInterviewerHints(input: InterviewerRequest): Promise<string> {
-  if (!import.meta.env.DEV) {
-    const res = await postJson<{ answer: string }>("/api/interviewer", input);
-    return res.answer;
-  }
-  try {
-    const res = await postJson<{ answer: string }>("/api/interviewer", input);
-    return res.answer;
-  } catch (err) {
-    const key = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!key) throw err;
-    const data = await callGeminiDirect(buildInterviewerBody(input), key);
-    return (data as { answer?: string })?.answer ?? "";
-  }
+  const res = await callGemini<{ answer: string }>("/api/interviewer", input, buildInterviewerBody(input));
+  return res.answer;
 }
 
 /** Final submission: full multimodal scored evaluation. */
 export async function requestFeedback(input: FeedbackRequest): Promise<Feedback> {
-  if (!import.meta.env.DEV) {
-    return postJson<Feedback>("/api/feedback", input);
-  }
-  try {
-    return await postJson<Feedback>("/api/feedback", input);
-  } catch (err) {
-    const key = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!key) throw err;
-    return (await callGeminiDirect(buildFeedbackBody(input), key)) as Feedback;
-  }
+  return callGemini<Feedback>("/api/feedback", input, buildFeedbackBody(input));
 }
 
 /** Post-feedback follow-up chat. */
 export async function requestFollowUp(input: ChatRequest): Promise<string> {
-  if (!import.meta.env.DEV) {
-    const res = await postJson<{ answer: string }>("/api/chat", input);
-    return res.answer;
-  }
-  try {
-    const res = await postJson<{ answer: string }>("/api/chat", input);
-    return res.answer;
-  } catch (err) {
-    const key = import.meta.env.VITE_GEMINI_API_KEY;
-    if (!key) throw err;
-    const data = await callGeminiDirect(buildChatBody(input), key);
-    return (data as { answer?: string })?.answer ?? "";
-  }
+  const res = await callGemini<{ answer: string }>("/api/chat", input, buildChatBody(input));
+  return res.answer;
 }
 
-// ---------------- payload builders ----------------
+// ---------------- transport ----------------
+
+/**
+ * Try the serverless proxy first when no direct key exists; if a direct key
+ * exists, skip the proxy entirely and call Gemini straight from the browser.
+ * If the proxy fails (e.g. server key missing) but a direct key is available,
+ * fall back to the direct call.
+ */
+async function callGemini<T>(apiPath: string, proxyBody: unknown, directBody: unknown): Promise<T> {
+  if (DIRECT_KEY) {
+    return callGeminiDirect<T>(directBody, DIRECT_KEY);
+  }
+  try {
+    return await postJson<T>(apiPath, proxyBody);
+  } catch (err) {
+    if (DIRECT_KEY) return callGeminiDirect<T>(directBody, DIRECT_KEY);
+    throw err;
+  }
+}
 
 async function postJson<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
@@ -169,6 +165,26 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+async function callGeminiDirect<T>(body: unknown, apiKey: string): Promise<T> {
+  const res = await fetch(`${API_BASE}/${GEMINI_MODEL}:generateContent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Gemini API error (${res.status}): ${text.slice(0, 300)}`);
+  }
+  const data = await res.json();
+  const text: string = (data?.candidates?.[0]?.content?.parts ?? [])
+    .map((p: { text?: string }) => p.text ?? "")
+    .join("");
+  if (!text) throw new Error("Gemini returned an empty response");
+  return JSON.parse(text) as T;
+}
+
+// ---------------- payload builders (used by the direct path; mirrored in api/*.js) ----------------
 
 function problemBlock(problem: Problem): string[] {
   return [
@@ -204,9 +220,10 @@ Evaluate like a real interviewer:
 - For LLD problems, judge: class modeling, OOP principles, design patterns (strategy, state, observer, factory), relationships, extensibility, and requirement coverage.
 - For HLD problems, judge: component architecture, data flow, storage choices, caching, scaling approach, bottlenecks, trade-offs, and requirement coverage.
 - Communication score reflects how well the notes explain the design, assumptions, and trade-offs (spoken or typed).
-- Be specific: quote the component names they drew. "You drew an API Gateway but no cache — reads will hammer the DB" is better than "improve scalability".
+- Be specific: quote the component names they drew. "You drew an API Gateway but no cache, so reads will hammer the DB" is better than "improve scalability".
 - overallScore must be consistent with the dimension scores.
 
+${NO_EM_DASH_RULE}
 Respond ONLY with JSON matching the provided schema.`;
 
 function buildFeedbackBody(req: FeedbackRequest) {
@@ -237,14 +254,16 @@ function buildFeedbackBody(req: FeedbackRequest) {
   };
 }
 
-const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. The candidate shares their progress so far (diagram outline, notes, code).
+const INTERVIEWER_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", a senior engineering interviewer conducting a LIVE LLD/HLD interview. The candidate shares their progress so far (diagram outline, notes, code) and often asks you a question or requests hints.
 
 Respond as an interviewer would mid-interview:
 - Briefly acknowledge what they have done well so far (1-2 sentences, reference their actual components).
-- Give AT MOST 2 gentle hints — nudges toward gaps or risks, never the full answer (e.g., "What happens if two requests claim the same resource at once?").
+- Answer their question if they asked one.
+- Give AT MOST 2 gentle hints: nudges toward gaps or risks, never the full answer.
 - Ask 1-2 probing questions a real interviewer would ask next.
 - Do NOT score. Do NOT give the complete solution. Keep the whole response under 150 words.
 
+${NO_EM_DASH_RULE}
 Respond ONLY with JSON matching the schema {"answer": string}.`;
 
 function buildInterviewerBody(req: InterviewerRequest) {
@@ -255,6 +274,8 @@ function buildInterviewerBody(req: InterviewerRequest) {
     ``,
     ...problemBlock(req.problem),
     ...candidateBlock(req.diagramOutline, req.notes, req.codeText),
+    ``,
+    `CANDIDATE'S MESSAGE: ${req.question?.trim() || "Review my progress so far and give me hints."}`,
   ].join("\n");
 
   const contents: unknown[] = [];
@@ -275,7 +296,10 @@ function buildInterviewerBody(req: InterviewerRequest) {
   };
 }
 
-const CHAT_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", continuing a conversation with a candidate about their evaluated LLD/HLD design attempt. You already scored their submission. Be concise (max 200 words), specific, reference their actual design, and when relevant teach the correct approach. Respond ONLY with JSON matching the schema {"answer": string}.`;
+const CHAT_SYSTEM_PROMPT = `You are "DesignLoop Interviewer", continuing a conversation with a candidate about their evaluated LLD/HLD design attempt. You already scored their submission. Be concise (max 200 words), specific, reference their actual design, and when relevant teach the correct approach.
+
+${NO_EM_DASH_RULE}
+Respond ONLY with JSON matching the schema {"answer": string}.`;
 
 function buildChatBody(req: ChatRequest) {
   const text = [
@@ -308,23 +332,6 @@ function buildChatBody(req: ChatRequest) {
       maxOutputTokens: 700,
     },
   };
-}
-
-async function callGeminiDirect(body: unknown, apiKey: string): Promise<unknown> {
-  const res = await fetch(`${API_BASE}/${GEMINI_MODEL}:generateContent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Gemini API error (${res.status}): ${text.slice(0, 300)}`);
-  }
-  const data = await res.json();
-  const text: string = (data?.candidates?.[0]?.content?.parts ?? [])
-    .map((p: { text?: string }) => p.text ?? "")
-    .join("");
-  return JSON.parse(text);
 }
 
 /** Extract a human-readable outline (labels + shape counts) from an Excalidraw scene JSON. */

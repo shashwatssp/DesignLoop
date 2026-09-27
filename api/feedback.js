@@ -75,9 +75,10 @@ Evaluate like a real interviewer:
 - For LLD problems, judge: class modeling, OOP principles, design patterns (strategy, state, observer, factory), relationships, extensibility, and requirement coverage.
 - For HLD problems, judge: component architecture, data flow, storage choices, caching, scaling approach, bottlenecks, trade-offs, and requirement coverage.
 - Communication score reflects how well the notes explain the design, assumptions, and trade-offs (spoken or typed).
-- Be specific: quote the component names they drew. "You drew an API Gateway but no cache — reads will hammer the DB" is better than "improve scalability".
+- Be specific: quote the component names they drew. "You drew an API Gateway but no cache, reads will hammer the DB" is better than "improve scalability".
 - overallScore must be consistent with the dimension scores.
 
+Never use em dashes (the long dash character) anywhere in your output. Use commas, colons or periods instead.
 Respond ONLY with JSON matching the provided schema.`;
 
 function buildGeminiBody(input) {

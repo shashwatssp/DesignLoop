@@ -48,7 +48,7 @@ export default function Layout() {
       </main>
 
       <footer className="border-t border-slate-200 py-4 text-center text-xs text-slate-500 dark:border-slate-800 dark:text-slate-500">
-        DesignLoop — practice design interviews, get real feedback. Built with React, Excalidraw & Gemini.
+        DesignLoop. Practice design interviews, get real feedback. Built with React, Excalidraw & Gemini.
       </footer>
     </div>
   );
